@@ -1,0 +1,15 @@
+{
+  "id": "./",
+  "name": "Encomienda Jireh",
+  "short_name": "Jireh",
+  "description": "Gestión de encomiendas Encomienda Jireh",
+  "lang": "es",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f3f5f1",
+  "theme_color": "#173b32",
+  "icons": [
+    { "src": "logo-jireh.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

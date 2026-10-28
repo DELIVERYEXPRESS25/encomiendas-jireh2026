@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Encomienda Jireh</title>
+  <desc id="desc">Caja verde con una ruta dorada y un punto de destino.</desc>
+  <defs>
+    <linearGradient id="bg" x1="15" y1="12" x2="112" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#16846a"/>
+      <stop offset="1" stop-color="#075941"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="34" y1="34" x2="91" y2="93" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffe09a"/>
+      <stop offset="1" stop-color="#f5b940"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="32" fill="url(#bg)"/>
+  <path d="m64 25 34 18v39L64 101 30 82V43l34-18Z" fill="#fff" fill-opacity=".11" stroke="#eaf8f1" stroke-width="4" stroke-linejoin="round"/>
+  <path d="m31 44 33 18 33-18M64 62v38M48 35l33 18v18" fill="none" stroke="#eaf8f1" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M43 80c7-10 14-13 22-11 7 2 11 0 16-8" fill="none" stroke="url(#gold)" stroke-width="5" stroke-linecap="round" stroke-dasharray="1 0"/>
+  <circle cx="83" cy="57" r="8" fill="url(#gold)" stroke="#fff" stroke-width="3"/>
+  <path d="M80 57h6M83 54v6" stroke="#704b12" stroke-width="2" stroke-linecap="round"/>
+</svg>

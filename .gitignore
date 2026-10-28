@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+.pytest_cache/
+instance/*.sqlite3
+instance/*.sqlite3-shm
+instance/*.sqlite3-wal
+instance/jireh_secret.key
+instance/jireh_auth_config.json
+instance/jireh_admin_password
+instance/jireh_master_password
