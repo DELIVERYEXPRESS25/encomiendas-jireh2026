@@ -1,0 +1,41 @@
+COMO SUBIR CAMBIOS A GITHUB Y PYTHONANYWHERE
+================================================
+
+Repositorio: https://github.com/DELIVERYEXPRESS25/encomiendas-jireh2026
+Rama de producción: main
+Carpeta del proyecto en PythonAnywhere: /home/ZEROBERRY/encomiendas-jireh2026
+Sitio: https://zeroberry.pythonanywhere.com
+
+1. SUBIR CAMBIOS DESDE LA COMPUTADORA A GITHUB
+
+Abre Terminal en la carpeta del proyecto y ejecuta:
+
+    cd "/ruta/a/ENCOMIENDA JIRE WEB"
+    git status
+    git add index.html SUBIR_CAMBIOS_GITHUB_PYTHONANYWHERE.txt
+    git commit -m "Mejorar diseño responsivo"
+    git push origin main
+
+Si Git dice que no hay cambios para guardar, revisa `git status`; no hace falta crear otro commit.
+No incluyas contraseñas, archivos .env, claves privadas ni la base SQLite en GitHub.
+
+2. ACTUALIZAR PYTHONANYWHERE
+
+En PythonAnywhere, abre una consola Bash (o la consola del virtualenv del sitio) y ejecuta:
+
+    cd /home/ZEROBERRY/encomiendas-jireh2026
+    git status
+    git pull --ff-only origin main
+
+Luego ve a la pestaña Web de PythonAnywhere y pulsa:
+
+    Reload ZEROBERRY.pythonanywhere.com
+
+Al terminar, visita https://zeroberry.pythonanywhere.com y confirma que carga correctamente.
+
+NOTAS
+
+- El repositorio de GitHub conserva el código; PythonAnywhere ejecuta la copia alojada en su carpeta.
+- `git pull --ff-only` evita crear un merge accidental. Si informa que hay cambios locales, no uses `reset --hard`; revisa primero `git status` y conserva esos cambios.
+- La base de datos y las claves de acceso se mantienen fuera de GitHub mediante las reglas del `.gitignore`.
+- Para futuras actualizaciones, repite primero el paso 1 y luego el paso 2.
