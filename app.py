@@ -267,8 +267,8 @@ def logout():
 @app.get("/")
 def index():
     page = (BASE_DIR / "index.html").read_text(encoding="utf-8")
-    marker = '<small style="display:block;padding:8px;color:#b8cec4">Encomienda Jireh · versión web</small>'
-    link = '<a href="/clave" style="display:block;padding:12px;color:#d6e7df;text-decoration:none">🔐 Cambiar clave de acceso</a>'
+    marker = '<small class="footer-caption">Encomienda Jireh · versión web</small>'
+    link = '<a class="side-action" href="/clave" aria-label="Cambiar clave de acceso">🔐 Cambiar clave de acceso</a>'
     page = page.replace(marker, link + marker, 1)
     response = app.response_class(page, mimetype="text/html")
     response.headers["Cache-Control"] = "no-store"
