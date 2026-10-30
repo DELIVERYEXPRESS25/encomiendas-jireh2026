@@ -586,7 +586,19 @@ try{dark=localStorage.getItem('jireh_dark')==='1'}catch(e){dark=false}applyTheme
 <style id="responsive-layout-overrides">
 /* Ajustes comunes para que los componentes se adapten sin desbordar la pantalla. */
 html{max-width:100%;overflow-x:hidden}body,.app,.main,.content{min-width:0;max-width:100%}.app{width:100%;margin:0}.main{flex:1 1 auto;width:auto}.content{width:100%;max-width:none;margin:0;padding-left:clamp(16px,2vw,36px);padding-right:clamp(16px,2vw,36px)}
-@media (min-width:651px) and (max-width:1450px){.top{height:auto;min-height:64px;padding:10px clamp(14px,2vw,24px);gap:10px;flex-wrap:wrap;justify-content:flex-start}.top h1{flex:1 1 160px}.top .date{flex:1 1 220px}.top form,.top>.btn{flex:0 1 auto}#databaseStatus{margin-left:auto;white-space:normal!important}}img,svg,canvas,video{max-width:100%}.grid>*{min-width:0}.field,.field input,.field select,.field textarea,.search{min-width:0}.btn{max-width:100%;white-space:normal;overflow-wrap:anywhere}.top>*{min-width:0}
+@media (min-width:651px) and (max-width:1450px){.top{height:auto;min-height:64px;padding:10px clamp(14px,2vw,24px);gap:10px;flex-wrap:wrap;justify-content:flex-start}.top h1{flex:1 1 160px}.top .date{flex:1 1 220px}.top form,.top>.btn{flex:0 1 auto}#databaseStatus{margin-left:auto;white-space:normal!important}}
+/* Escritorio: espacio suficiente para todas las acciones del historial. */
+@media(min-width:1151px){
+  #historyTable .table-wrap{overflow-x:auto}
+  #historyTable table{table-layout:fixed;min-width:1120px}
+  #historyTable th:nth-child(1){width:7%}#historyTable th:nth-child(2){width:8%}
+  #historyTable th:nth-child(3){width:11%}#historyTable th:nth-child(4){width:12%}
+  #historyTable th:nth-child(5){width:9%}#historyTable th:nth-child(6),#historyTable th:nth-child(7){width:7%}
+  #historyTable th:nth-child(8){width:8%}#historyTable th:nth-child(9){width:31%}
+  #historyTable .history-actions{flex-wrap:wrap;gap:7px;max-width:100%;overflow:visible}
+  #historyTable td:last-child{overflow:visible}
+}
+img,svg,canvas,video{max-width:100%}.grid>*{min-width:0}.field,.field input,.field select,.field textarea,.search{min-width:0}.btn{max-width:100%;white-space:normal;overflow-wrap:anywhere}.top>*{min-width:0}
 @media (min-width:651px) and (max-width:1100px){
   .sidebar{width:190px}.brand{padding:18px 14px}.content{padding:clamp(16px,2.4vw,26px)}
   .top{height:auto;min-height:64px;padding:10px 18px;gap:10px;flex-wrap:wrap;justify-content:flex-start}
