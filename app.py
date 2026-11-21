@@ -332,6 +332,7 @@ def login():
             session["jireh_admin"] = True
             session["jireh_role"] = "admin" if username == admin_username else "staff"
             session["jireh_username"] = admin_username if username == admin_username else team_user.username
+            session["jireh_welcome"] = session["jireh_username"]
             if staff_matches:
                 session["jireh_user_id"] = team_user.id
                 session["user_credential_version"] = team_user.credential_version
@@ -475,6 +476,8 @@ def index():
     csrf_script = (
         '<meta name="csrf-token" content="' + csrf_token + '">'
         '<script>window.JIREH_ROLE="' + session.get("jireh_role", "admin") + '";</script>'
+        '<script>window.JIREH_WELCOME=' + json.dumps(session.pop("jireh_welcome", None), ensure_ascii=False) + ';</script>'
+        '<script>if(window.JIREH_WELCOME){document.addEventListener("DOMContentLoaded",function(){var style=document.createElement("style");style.textContent=".jireh-welcome{position:fixed;z-index:9999;top:20px;right:20px;max-width:min(90vw,380px);padding:16px 20px;border-radius:12px;background:#0f6e56;color:#fff;box-shadow:0 12px 36px #102b2260;font:600 16px/1.4 Arial,sans-serif;animation:jirehWelcomeIn .25s ease-out}@keyframes jirehWelcomeIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}";document.head.appendChild(style);var toast=document.createElement("div");toast.className="jireh-welcome";toast.setAttribute("role","status");toast.setAttribute("aria-live","polite");toast.textContent="¡Bienvenido, "+window.JIREH_WELCOME+"!";document.body.appendChild(toast);setTimeout(function(){toast.remove()},5000)})}</script>'
         '<script>(function(){var f=window.fetch.bind(window);window.fetch=function(input,init){init=init||{};var m=(init.method||(input instanceof Request?input.method:"GET")).toUpperCase();if(!["GET","HEAD","OPTIONS"].includes(m)){var u=new URL(input instanceof Request?input.url:input,location.href);if(u.origin===location.origin){var h=new Headers(init.headers||(input instanceof Request?input.headers:undefined));h.set("X-CSRF-Token",document.querySelector("meta[name=csrf-token]").content);init=Object.assign({},init,{headers:h})}}return f(input,init)}})();</script>'
     )
     page = page.replace("<head>", "<head>" + csrf_script, 1)
