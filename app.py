@@ -118,6 +118,12 @@ def load_auth_config():
         return {}
 
 
+def configured_admin_username(auth_config=None):
+    config = auth_config if isinstance(auth_config, dict) else load_auth_config()
+    username = str(config.get("admin_username", "admin")).strip().lower()
+    return username if re.fullmatch(r"[a-z0-9._-]{3,40}", username) else "admin"
+
+
 def ensure_csrf_token():
     token = session.get("_csrf_token")
     if not token:
@@ -282,7 +288,7 @@ def login():
     if not next_url.startswith("/") or next_url.startswith("//"):
         next_url = "/"
     error = None
-    notice = "La clave se actualizó. Inicia sesión con la nueva clave." if request.args.get("changed") == "1" else None
+    notice = "Los datos de administración se actualizaron. Inicia sesión con tu usuario y clave nuevos." if request.args.get("changed") == "1" else None
     status = 200
     if request.method == "POST":
         now = datetime.now(timezone.utc)
@@ -308,6 +314,7 @@ def login():
             db.session.commit()
         submitted = request.form.get("password", "")
         auth_config = load_auth_config()
+        admin_username = configured_admin_username(auth_config)
         stored_hash = auth_config.get("admin_password_hash")
         if stored_hash:
             admin_matches = check_password_hash(stored_hash, submitted)
@@ -315,16 +322,16 @@ def login():
             configured_password = os.environ.get("JIREH_ADMIN_PASSWORD", ADMIN_PASSWORD)
             admin_matches = bool(configured_password) and hmac.compare_digest(submitted.encode("utf-8"), configured_password.encode("utf-8"))
         master_matches = bool(MASTER_PASSWORD) and hmac.compare_digest(submitted.encode("utf-8"), MASTER_PASSWORD.encode("utf-8"))
-        team_user = db.session.scalar(select(models.TeamUser).where(models.TeamUser.username == username, models.TeamUser.active.is_(True))) if username != "admin" else None
+        team_user = db.session.scalar(select(models.TeamUser).where(models.TeamUser.username == username, models.TeamUser.active.is_(True))) if username != admin_username else None
         staff_matches = bool(team_user) and check_password_hash(team_user.password_hash, submitted)
-        if (username == "admin" and (admin_matches or master_matches)) or staff_matches:
+        if (username == admin_username and (admin_matches or master_matches)) or staff_matches:
             if lock:
                 db.session.delete(lock)
                 db.session.commit()
             session.clear()
             session["jireh_admin"] = True
-            session["jireh_role"] = "admin" if username == "admin" else "staff"
-            session["jireh_username"] = "admin" if username == "admin" else team_user.username
+            session["jireh_role"] = "admin" if username == admin_username else "staff"
+            session["jireh_username"] = admin_username if username == admin_username else team_user.username
             if staff_matches:
                 session["jireh_user_id"] = team_user.id
                 session["user_credential_version"] = team_user.credential_version
@@ -356,17 +363,18 @@ def login():
 
 CHANGE_PASSWORD_PAGE = """<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Cambiar clave · Encomienda Jireh</title><style>
+<title>Acceso administrador · Encomienda Jireh</title><style>
 *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f1f4f1;color:#26352e;font:16px Arial,sans-serif}
 .card{width:min(92vw,480px);background:white;border-radius:24px;padding:38px;box-shadow:0 18px 55px #16352b20}.brand{color:#087f62;font-size:25px;margin:0 0 8px}
 p{color:#708077;line-height:1.5}label{display:block;font-weight:700;margin:16px 0 8px}input{width:100%;padding:13px;border:1px solid #cbd7d1;border-radius:12px;font-size:16px}
 button,.back{display:inline-block;margin-top:20px;padding:13px 18px;border:0;border-radius:12px;background:#087f62;color:white;text-decoration:none;font-size:16px;font-weight:700;cursor:pointer}.error{padding:11px 13px;border-radius:10px;background:#fff0ed;color:#a53727}
-</style></head><body><main class="card"><h1 class="brand">Cambiar clave de acceso</h1><p>Esta clave la usarán quienes entren a la aplicación. La clave maestra permanece privada y no se cambia aquí.</p>
+</style></head><body><main class="card"><h1 class="brand">Acceso administrador</h1><p>Personaliza el usuario administrador y, si quieres, cambia también la clave. La clave maestra permanece privada y no se modifica aquí.</p>
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
-<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label for="current_password">Confirma tu clave actual</label><input id="current_password" name="current_password" type="password" autocomplete="current-password" required>
-<label for="new_password">Nueva clave de acceso</label><input id="new_password" name="new_password" type="password" minlength="12" autocomplete="new-password" required>
-<label for="confirm_password">Confirma la nueva clave</label><input id="confirm_password" name="confirm_password" type="password" minlength="12" autocomplete="new-password" required>
-<button type="submit">Guardar nueva clave</button></form><a class="back" href="/">Volver a Encomienda Jireh</a></main></body></html>"""
+<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label for="admin_username">Usuario administrador</label><input id="admin_username" name="admin_username" value="{{ admin_username }}" minlength="3" maxlength="40" pattern="[a-zA-Z0-9._-]{3,40}" autocomplete="username" required>
+<label for="current_password">Confirma tu clave actual</label><input id="current_password" name="current_password" type="password" autocomplete="current-password" required>
+<label for="new_password">Nueva clave (opcional)</label><input id="new_password" name="new_password" type="password" minlength="12" autocomplete="new-password">
+<label for="confirm_password">Confirma la nueva clave</label><input id="confirm_password" name="confirm_password" type="password" minlength="12" autocomplete="new-password">
+<button type="submit">Guardar acceso</button></form><a class="back" href="/">Volver a Encomienda Jireh</a></main></body></html>"""
 
 
 @app.route("/clave", methods=["GET", "POST"])
@@ -375,9 +383,9 @@ def change_admin_password():
         abort(403)
     error = None
     status = 200
+    auth_config = load_auth_config()
     if request.method == "POST":
         current_password = request.form.get("current_password", "")
-        auth_config = load_auth_config()
         stored_hash = auth_config.get("admin_password_hash")
         if session.get("jireh_master") is True:
             current_matches = bool(MASTER_PASSWORD) and hmac.compare_digest(current_password.encode("utf-8"), MASTER_PASSWORD.encode("utf-8"))
@@ -386,23 +394,34 @@ def change_admin_password():
         else:
             configured_password = os.environ.get("JIREH_ADMIN_PASSWORD", ADMIN_PASSWORD)
             current_matches = bool(configured_password) and hmac.compare_digest(current_password.encode("utf-8"), configured_password.encode("utf-8"))
+        new_username = request.form.get("admin_username", "").strip().lower()
+        current_username = configured_admin_username(auth_config)
         new_password = request.form.get("new_password", "")
         confirmation = request.form.get("confirm_password", "")
+        changing_password = bool(new_password or confirmation)
         if not current_matches:
             error, status = "La clave actual no es correcta.", 403
-        elif len(new_password) < 12:
+        elif not re.fullmatch(r"[a-z0-9._-]{3,40}", new_username):
+            error, status = "El usuario debe tener entre 3 y 40 caracteres: letras, números, punto, guion o guion bajo.", 400
+        elif new_username != current_username and db.session.scalar(select(models.TeamUser.id).where(models.TeamUser.username == new_username)):
+            error, status = "Ese usuario ya está asignado a una cuenta del equipo.", 409
+        elif not changing_password and new_username == current_username:
+            error, status = "Cambia el usuario o escribe una clave nueva.", 400
+        elif changing_password and len(new_password) < 12:
             error, status = "La nueva clave debe tener al menos 12 caracteres.", 400
-        elif new_password != confirmation:
+        elif changing_password and new_password != confirmation:
             error, status = "Las claves nuevas no coinciden.", 400
-        elif MASTER_PASSWORD and hmac.compare_digest(new_password.encode("utf-8"), MASTER_PASSWORD.encode("utf-8")):
+        elif changing_password and MASTER_PASSWORD and hmac.compare_digest(new_password.encode("utf-8"), MASTER_PASSWORD.encode("utf-8")):
             error, status = "La clave de acceso debe ser distinta a la clave maestra.", 400
         else:
-            auth_config["admin_password_hash"] = generate_password_hash(new_password, method="pbkdf2:sha256:600000")
+            auth_config["admin_username"] = new_username
+            if changing_password:
+                auth_config["admin_password_hash"] = generate_password_hash(new_password, method="pbkdf2:sha256:600000")
             auth_config["auth_version"] = int(auth_config.get("auth_version", 0)) + 1
             save_auth_config(auth_config)
             session.clear()
             return redirect(url_for("login", changed="1"))
-    response = app.make_response(render_template_string(CHANGE_PASSWORD_PAGE, error=error, csrf_token=ensure_csrf_token()))
+    response = app.make_response(render_template_string(CHANGE_PASSWORD_PAGE, error=error, csrf_token=ensure_csrf_token(), admin_username=configured_admin_username(auth_config)))
     response.status_code = status
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -445,7 +464,7 @@ def index():
     page = (BASE_DIR / "index.html").read_text(encoding="utf-8")
     marker = '<small class="footer-caption">Encomienda Jireh · versión web</small>'
     if session.get("jireh_role") == "admin":
-        links = '<a class="side-action" href="/clave" aria-label="Cambiar clave de acceso">🔐 Cambiar clave de acceso</a><a class="side-action" href="/usuarios" aria-label="Administrar usuarios">👥 Usuarios del equipo</a>'
+        links = '<a class="side-action" href="/clave" aria-label="Cambiar usuario y clave administrador">🔐 Usuario y clave admin</a><a class="side-action" href="/usuarios" aria-label="Administrar usuarios">👥 Usuarios del equipo</a>'
     else:
         links = '<a class="side-action" href="/mi-clave" aria-label="Cambiar mi contraseña">🔐 Cambiar mi contraseña</a>'
     page = page.replace(marker, links + marker, 1)
@@ -572,8 +591,10 @@ def create_team_user():
     username = str(body.get("username", "")).strip().lower()
     display = str(body.get("displayName", "")).strip()
     password = str(body.get("password", ""))
-    if not re.fullmatch(r"[a-z0-9._-]{3,40}", username) or username == "admin":
+    if not re.fullmatch(r"[a-z0-9._-]{3,40}", username):
         return jsonify({"error": "Usuario: usa 3–40 caracteres (letras, números, punto, guion o guion bajo)."}), 400
+    if username == configured_admin_username():
+        return jsonify({"error": "Ese nombre está reservado para la cuenta administradora."}), 409
     if len(display) < 2 or len(display) > 100:
         return jsonify({"error": "El nombre debe tener entre 2 y 100 caracteres."}), 400
     if len(password) < 12:
