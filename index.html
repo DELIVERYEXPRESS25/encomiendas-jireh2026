@@ -635,6 +635,7 @@ try{dark=localStorage.getItem('jireh_dark')==='1'}catch(e){dark=false}applyTheme
 <style id="responsive-layout-overrides">
 /* Ajustes comunes para que los componentes se adapten sin desbordar la pantalla. */
 html{max-width:100%;overflow-x:hidden}body,.app,.main,.content{min-width:0;max-width:100%}.app{width:100%;margin:0}.main{flex:1 1 auto;width:auto}.content{width:100%;max-width:none;margin:0;padding-left:clamp(16px,2vw,36px);padding-right:clamp(16px,2vw,36px)}
+#installApp,#databaseStatus{display:none!important}
 @media (min-width:651px) and (max-width:1450px){.top{height:auto;min-height:64px;padding:10px clamp(14px,2vw,24px);gap:10px;flex-wrap:wrap;justify-content:flex-start}.top h1{flex:1 1 160px}.top .date{flex:1 1 220px}.top form,.top>.btn{flex:0 1 auto}#databaseStatus{margin-left:auto;white-space:normal!important}}
 /* Escritorio: espacio suficiente para todas las acciones del historial. */
 @media(min-width:1151px){
