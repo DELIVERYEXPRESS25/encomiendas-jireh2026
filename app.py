@@ -2,18 +2,19 @@ from datetime import datetime, timedelta, timezone
 import hmac
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import tempfile
 
-from flask import Flask, abort, jsonify, redirect, render_template_string, request, send_from_directory, session, url_for
+from flask import Flask, abort, jsonify, redirect, render_template, render_template_string, request, send_from_directory, session, url_for
 from flask_migrate import Migrate
 from sqlalchemy import delete, event, func, select, text
 from sqlalchemy.engine import Engine
 from werkzeug.security import check_password_hash, generate_password_hash
 from flask.sessions import SecureCookieSessionInterface
 
-from db import RevisionConflict, get_state, replace_state
+from db import RecordConflict, RecordNotFound, RevisionConflict, delete_record, get_state, replace_state, save_record
 from extensions import db, migrate
 import models  # noqa: F401 - registers ORM models with SQLAlchemy metadata
 
@@ -158,11 +159,11 @@ button:hover{background:#f6121d}button:active{transform:scale(.99)}button:focus-
 .error{margin:0 0 16px;padding:11px 13px;border:1px solid #8e3030;border-radius:6px;background:#391719;color:#ffb8b8}
 .hint{margin:18px 0 0;text-align:center;color:#858585;font-size:13px}
 @media(max-width:520px){body{padding:16px}.card{width:100%;padding:34px 26px 30px}.brand{font-size:27px}}
-</style></head><body><main class="card"><h1 class="brand">Encomienda Jireh</h1><p class="sub">Ingresa la clave de administrador para continuar.</p>
+</style></head><body><main class="card"><h1 class="brand">Encomienda Jireh</h1><p class="sub">Ingresa tu usuario y contraseña para continuar.</p>
 {% if notice %}<p class="hint" role="status">{{ notice }}</p>{% endif %}
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 <form method="post" action="{{ url_for('login') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="next" value="{{ next_url }}">
-<label for="password">Clave de administrador</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+<label for="username">Usuario</label><input id="username" name="username" autocomplete="username" value="{{ request.form.get('username', 'admin') }}" required autofocus><label for="password">Contraseña</label><input id="password" name="password" type="password" autocomplete="current-password" required>
 <button type="submit">Iniciar sesión</button></form><p class="hint">Encomienda Jireh · acceso protegido</p></main></body></html>"""
 
 
@@ -171,6 +172,12 @@ def require_admin_session():
     if request.endpoint in {"login", "logout"}:
         return None
     if session.get("jireh_admin") is True:
+        if session.get("jireh_role") == "staff":
+            user = db.session.get(models.TeamUser, session.get("jireh_user_id"))
+            if user and user.active and user.credential_version == session.get("user_credential_version"):
+                db.session.commit()
+                return None
+            session.clear()
         auth_version = int(load_auth_config().get("auth_version", 0))
         master_is_current = (
             session.get("jireh_master") is not True
@@ -256,7 +263,7 @@ def record_web_activity(response):
             endpoint=request.endpoint or "unknown",
             method=request.method,
             status=response.status_code,
-            username="admin" if session.get("jireh_admin") is True else "anonimo",
+            username=session.get("jireh_username", "anonimo"),
             remote_addr=request.remote_addr or "desconocida",
         )
         db.session.add(activity)
@@ -313,6 +320,7 @@ def login():
             response.headers["Retry-After"] = str(retry_after)
             response.headers["Cache-Control"] = "no-store"
             return response
+        username = request.form.get("username", "admin").strip().lower()
         submitted = request.form.get("password", "")
         auth_config = load_auth_config()
         stored_hash = auth_config.get("admin_password_hash")
@@ -322,9 +330,16 @@ def login():
             configured_password = os.environ.get("JIREH_ADMIN_PASSWORD", ADMIN_PASSWORD)
             admin_matches = bool(configured_password) and hmac.compare_digest(submitted.encode("utf-8"), configured_password.encode("utf-8"))
         master_matches = bool(MASTER_PASSWORD) and hmac.compare_digest(submitted.encode("utf-8"), MASTER_PASSWORD.encode("utf-8"))
-        if admin_matches or master_matches:
+        team_user = db.session.scalar(select(models.TeamUser).where(models.TeamUser.username == username, models.TeamUser.active.is_(True))) if username != "admin" else None
+        staff_matches = bool(team_user) and check_password_hash(team_user.password_hash, submitted)
+        if (username == "admin" and (admin_matches or master_matches)) or staff_matches:
             session.clear()
             session["jireh_admin"] = True
+            session["jireh_role"] = "admin" if username == "admin" else "staff"
+            session["jireh_username"] = "admin" if username == "admin" else team_user.username
+            if staff_matches:
+                session["jireh_user_id"] = team_user.id
+                session["user_credential_version"] = team_user.credential_version
             session["jireh_master"] = master_matches
             if master_matches:
                 session["master_auth_tag"] = master_auth_tag()
@@ -346,13 +361,15 @@ button,.back{display:inline-block;margin-top:20px;padding:13px 18px;border:0;bor
 </style></head><body><main class="card"><h1 class="brand">Cambiar clave de acceso</h1><p>Esta clave la usarán quienes entren a la aplicación. La clave maestra permanece privada y no se cambia aquí.</p>
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label for="current_password">Confirma tu clave actual</label><input id="current_password" name="current_password" type="password" autocomplete="current-password" required>
-<label for="new_password">Nueva clave de acceso</label><input id="new_password" name="new_password" type="password" minlength="8" autocomplete="new-password" required>
-<label for="confirm_password">Confirma la nueva clave</label><input id="confirm_password" name="confirm_password" type="password" minlength="8" autocomplete="new-password" required>
+<label for="new_password">Nueva clave de acceso</label><input id="new_password" name="new_password" type="password" minlength="12" autocomplete="new-password" required>
+<label for="confirm_password">Confirma la nueva clave</label><input id="confirm_password" name="confirm_password" type="password" minlength="12" autocomplete="new-password" required>
 <button type="submit">Guardar nueva clave</button></form><a class="back" href="/">Volver a Encomienda Jireh</a></main></body></html>"""
 
 
 @app.route("/clave", methods=["GET", "POST"])
 def change_admin_password():
+    if session.get("jireh_role", "admin") != "admin":
+        abort(403)
     error = None
     status = 200
     if request.method == "POST":
@@ -370,8 +387,8 @@ def change_admin_password():
         confirmation = request.form.get("confirm_password", "")
         if not current_matches:
             error, status = "La clave actual no es correcta.", 403
-        elif len(new_password) < 8:
-            error, status = "La nueva clave debe tener al menos 8 caracteres.", 400
+        elif len(new_password) < 12:
+            error, status = "La nueva clave debe tener al menos 12 caracteres.", 400
         elif new_password != confirmation:
             error, status = "Las claves nuevas no coinciden.", 400
         elif MASTER_PASSWORD and hmac.compare_digest(new_password.encode("utf-8"), MASTER_PASSWORD.encode("utf-8")):
@@ -388,6 +405,32 @@ def change_admin_password():
     return response
 
 
+@app.route("/mi-clave", methods=["GET", "POST"])
+def change_own_password():
+    if session.get("jireh_role") != "staff":
+        return redirect(url_for("change_admin_password"))
+    user = db.session.get(models.TeamUser, session.get("jireh_user_id"))
+    if not user or not user.active:
+        session.clear()
+        return redirect(url_for("login"))
+    error = None
+    if request.method == "POST":
+        current = request.form.get("current_password", "")
+        new = request.form.get("new_password", "")
+        confirm = request.form.get("confirm_password", "")
+        if not check_password_hash(user.password_hash, current): error = "La contraseña actual no es correcta."
+        elif len(new) < 12: error = "La contraseña nueva debe tener al menos 12 caracteres."
+        elif new != confirm: error = "Las contraseñas nuevas no coinciden."
+        else:
+            user.password_hash = generate_password_hash(new, method="pbkdf2:sha256:600000")
+            user.credential_version += 1
+            db.session.commit()
+            session.clear()
+            return redirect(url_for("login", changed="1"))
+    page = """<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{{ csrf_token }}"><title>Cambiar contraseña</title><style>body{font:16px Arial;background:#f1f4f1;display:grid;place-items:center;min-height:100vh;color:#26352e}.box{background:white;padding:32px;border-radius:18px;width:min(90vw,480px)}input,button{display:block;width:100%;box-sizing:border-box;padding:13px;margin:12px 0;border:1px solid #ccd7d1;border-radius:9px;font:inherit}button{background:#087f62;color:white}</style><main class="box"><h1>Cambiar mi contraseña</h1>{% if error %}<p role="alert">{{ error }}</p>{% endif %}<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input name="current_password" type="password" placeholder="Contraseña actual" required><input name="new_password" type="password" placeholder="Nueva (12 caracteres mínimo)" minlength="12" required><input name="confirm_password" type="password" placeholder="Confirmar nueva contraseña" minlength="12" required><button>Guardar</button></form><a href="/">Volver a la app</a></main></html>"""
+    return render_template_string(page, error=error, csrf_token=ensure_csrf_token())
+
+
 @app.post("/logout")
 def logout():
     session.clear()
@@ -398,14 +441,18 @@ def logout():
 def index():
     page = (BASE_DIR / "index.html").read_text(encoding="utf-8")
     marker = '<small class="footer-caption">Encomienda Jireh · versión web</small>'
-    link = '<a class="side-action" href="/clave" aria-label="Cambiar clave de acceso">🔐 Cambiar clave de acceso</a>'
-    page = page.replace(marker, link + marker, 1)
+    if session.get("jireh_role") == "admin":
+        links = '<a class="side-action" href="/clave" aria-label="Cambiar clave de acceso">🔐 Cambiar clave de acceso</a><a class="side-action" href="/usuarios" aria-label="Administrar usuarios">👥 Usuarios del equipo</a>'
+    else:
+        links = '<a class="side-action" href="/mi-clave" aria-label="Cambiar mi contraseña">🔐 Cambiar mi contraseña</a>'
+    page = page.replace(marker, links + marker, 1)
     csrf_token = ensure_csrf_token()
     logout_form = '<form action="/logout" method="post" style="margin:0">'
     secured_logout_form = logout_form + '<input type="hidden" name="csrf_token" value="' + csrf_token + '">'
     page = page.replace(logout_form, secured_logout_form, 1)
     csrf_script = (
         '<meta name="csrf-token" content="' + csrf_token + '">'
+        '<script>window.JIREH_ROLE="' + session.get("jireh_role", "admin") + '";</script>'
         '<script>(function(){var f=window.fetch.bind(window);window.fetch=function(input,init){init=init||{};var m=(init.method||(input instanceof Request?input.method:"GET")).toUpperCase();if(!["GET","HEAD","OPTIONS"].includes(m)){var u=new URL(input instanceof Request?input.url:input,location.href);if(u.origin===location.origin){var h=new Headers(init.headers||(input instanceof Request?input.headers:undefined));h.set("X-CSRF-Token",document.querySelector("meta[name=csrf-token]").content);init=Object.assign({},init,{headers:h})}}return f(input,init)}})();</script>'
     )
     page = page.replace("<head>", "<head>" + csrf_script, 1)
@@ -432,11 +479,13 @@ def read_state():
 
 @app.put("/api/state")
 def write_state():
+    if session.get("jireh_role", "admin") != "admin":
+        return jsonify({"error": "Solo administración puede restaurar la base completa."}), 403
     body = request.get_json(silent=True)
     if not isinstance(body, dict) or not isinstance(body.get("revision"), int) or body["revision"] < 0:
         return jsonify({"error": "Se requiere una revisión válida de la base de datos."}), 400
     try:
-        state = replace_state(body, body["revision"])
+        state = replace_state(body, body["revision"], actor=session.get("jireh_username", "admin"))
     except RevisionConflict as error:
         return jsonify({"error": "Los datos cambiaron desde otra sesión. Recarga la app para evitar sobrescribir cambios.", "revision": error.current}), 409
     except ValueError as error:
@@ -446,6 +495,124 @@ def write_state():
         return jsonify({"error": "No se pudo guardar la transacción. La base de datos conservó el estado anterior."}), 500
     return jsonify(state)
 
+
+@app.post("/api/shipments")
+def create_shipment():
+    return _save_record_response("shipment", request.get_json(silent=True), None)
+
+@app.put("/api/shipments/<int:record_id>")
+def update_shipment(record_id):
+    body = request.get_json(silent=True) or {}
+    version = body.pop("version", None)
+    return _save_record_response("shipment", body, record_id, version)
+
+@app.delete("/api/shipments/<int:record_id>")
+def remove_shipment(record_id):
+    return _delete_record_response("shipment", record_id)
+
+@app.post("/api/costs")
+def create_cost():
+    return _save_record_response("cost", request.get_json(silent=True), None)
+
+@app.put("/api/costs/<int:record_id>")
+def update_cost(record_id):
+    body = request.get_json(silent=True) or {}
+    version = body.pop("version", None)
+    return _save_record_response("cost", body, record_id, version)
+
+@app.delete("/api/costs/<int:record_id>")
+def remove_cost(record_id):
+    return _delete_record_response("cost", record_id)
+
+def _save_record_response(kind, body, record_id, version=None):
+    if record_id is not None and (not isinstance(version, int) or version < 1):
+        return jsonify({"error": "Falta la versión actual del registro."}), 400
+    try:
+        saved = save_record(kind, body, session.get("jireh_username", "admin"), version, record_id)
+        return jsonify(saved), 201 if record_id is None else 200
+    except RecordConflict as error:
+        return jsonify({"error": "Otra sesión modificó este registro. Recarga los datos y revisa el cambio antes de volver a guardarlo.", "version": error.current}), 409
+    except RecordNotFound as error:
+        return jsonify({"error": str(error)}), 404
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception:
+        db.session.rollback()
+        app.logger.exception("No se pudo guardar el registro")
+        return jsonify({"error": "No se pudo guardar. El registro conserva sus datos anteriores."}), 500
+
+def _delete_record_response(kind, record_id):
+    body = request.get_json(silent=True) or {}
+    version = body.get("version")
+    if not isinstance(version, int) or version < 1:
+        return jsonify({"error": "Falta la versión actual del registro."}), 400
+    try:
+        delete_record(kind, record_id, version, session.get("jireh_username", "admin"))
+        return jsonify({"ok": True})
+    except RecordConflict as error:
+        return jsonify({"error": "Otra sesión modificó este registro. No se eliminó.", "version": error.current}), 409
+    except Exception:
+        db.session.rollback()
+        app.logger.exception("No se pudo eliminar el registro")
+        return jsonify({"error": "No se pudo eliminar el registro."}), 500
+
+@app.get("/api/audit")
+def read_audit():
+    rows = db.session.scalars(select(models.DatabaseAudit).order_by(models.DatabaseAudit.revision.desc()).limit(100)).all()
+    return jsonify({"events": [{"revision": x.revision, "changed_at": x.changed_at, "actor": x.actor, "action": x.action, "record_type": x.record_type, "record_id": x.record_id} for x in rows]})
+
+@app.post("/api/users")
+def create_team_user():
+    if session.get("jireh_role") != "admin":
+        return jsonify({"error": "Solo administración puede crear usuarios."}), 403
+    body = request.get_json(silent=True) or {}
+    username = str(body.get("username", "")).strip().lower()
+    display = str(body.get("displayName", "")).strip()
+    password = str(body.get("password", ""))
+    if not re.fullmatch(r"[a-z0-9._-]{3,40}", username) or username == "admin":
+        return jsonify({"error": "Usuario: usa 3–40 caracteres (letras, números, punto, guion o guion bajo)."}), 400
+    if len(display) < 2 or len(display) > 100:
+        return jsonify({"error": "El nombre debe tener entre 2 y 100 caracteres."}), 400
+    if len(password) < 12:
+        return jsonify({"error": "La contraseña debe tener al menos 12 caracteres."}), 400
+    if db.session.scalar(select(models.TeamUser.id).where(models.TeamUser.username == username)):
+        return jsonify({"error": "Ese usuario ya existe."}), 409
+    user = models.TeamUser(username=username, display_name=display, password_hash=generate_password_hash(password, method="pbkdf2:sha256:600000"))
+    db.session.add(user)
+    db.session.commit()
+    return jsonify({"id": user.id, "username": user.username, "displayName": user.display_name, "active": user.active}), 201
+
+@app.get("/api/users")
+def list_team_users():
+    if session.get("jireh_role") != "admin":
+        return jsonify({"error": "Solo administración puede ver usuarios."}), 403
+    rows = db.session.scalars(select(models.TeamUser).order_by(models.TeamUser.username)).all()
+    return jsonify({"users": [{"id": x.id, "username": x.username, "displayName": x.display_name, "active": x.active} for x in rows]})
+
+@app.patch("/api/users/<int:user_id>")
+def update_team_user(user_id):
+    if session.get("jireh_role") != "admin":
+        return jsonify({"error": "Solo administración puede administrar usuarios."}), 403
+    user = db.session.get(models.TeamUser, user_id)
+    if not user:
+        return jsonify({"error": "Usuario no encontrado."}), 404
+    body = request.get_json(silent=True) or {}
+    if "active" in body:
+        user.active = bool(body["active"])
+    if "password" in body:
+        password = str(body["password"])
+        if len(password) < 12:
+            return jsonify({"error": "La contraseña debe tener al menos 12 caracteres."}), 400
+        user.password_hash = generate_password_hash(password, method="pbkdf2:sha256:600000")
+        user.credential_version += 1
+    db.session.commit()
+    return jsonify({"ok": True})
+
+@app.get("/usuarios")
+def manage_users():
+    if session.get("jireh_role") != "admin":
+        abort(403)
+    return render_template("team_users.html", csrf_token=ensure_csrf_token())
 
 @app.get("/api/backup")
 def backup():

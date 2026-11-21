@@ -75,13 +75,13 @@ def parse_extra(value: str) -> dict[str, Any]:
 
 
 SHIPMENT_FIELDS = {
-    "id", "code", "date", "sender", "senderPhone", "receiver", "receiverPhone", "address",
+    "id", "version", "code", "date", "sender", "senderPhone", "receiver", "receiverPhone", "address",
     "destination", "items", "weight", "subtotal", "total", "paid", "remaining", "status",
     "payment", "payments", "postagePlace", "postage", "note",
 }
 ITEM_FIELDS = {"description", "type", "qty", "lbs", "weight", "value", "amount"}
 PAYMENT_FIELDS = {"date", "amount", "type"}
-COST_FIELDS = {"id", "date", "category", "amount", "concept", "note"}
+COST_FIELDS = {"id", "version", "date", "category", "amount", "concept", "note"}
 
 
 def normalize_state(payload: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -220,7 +220,7 @@ def get_state() -> dict[str, Any]:
             obj.update(parse_extra(payment.extra_json))
             payments.append(obj)
         paid_cents = sum(payment.amount_cents for payment in row.payments)
-        obj = {"id": row.id, "code": row.code, "date": row.shipment_date, "sender": row.sender,
+        obj = {"id": row.id, "version": row.version, "code": row.code, "date": row.shipment_date, "sender": row.sender,
                "senderPhone": row.sender_phone, "receiver": row.receiver, "receiverPhone": row.receiver_phone,
                "address": row.address, "destination": row.destination, "items": items, "weight": row.weight_lbs,
                "subtotal": money(row.subtotal_cents), "postage": money(row.postage_cents), "total": money(row.total_cents),
@@ -231,18 +231,19 @@ def get_state() -> dict[str, Any]:
     cost_rows = db.session.scalars(select(TravelCost).order_by(TravelCost.cost_date.desc(), TravelCost.id.desc())).all()
     costs = []
     for row in cost_rows:
-        obj = {"id": row.id, "date": row.cost_date, "category": row.category, "amount": money(row.amount_cents), "concept": row.concept, "note": row.note}
+        obj = {"id": row.id, "version": row.version, "date": row.cost_date, "category": row.category, "amount": money(row.amount_cents), "concept": row.concept, "note": row.note}
         obj.update(parse_extra(row.extra_json))
         costs.append(obj)
     return {"revision": meta.revision, "shipments": shipments, "costs": costs}
 
 
-def replace_state(payload: Any, expected_revision: int) -> dict[str, Any]:
+def replace_state(payload: Any, expected_revision: int, actor: str = "admin") -> dict[str, Any]:
     shipments, costs = normalize_state(payload)
     canonical = json.dumps({"shipments": shipments, "costs": costs}, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     try:
         with db.session.begin():
+            db.session.execute(update(DatabaseMeta).where(DatabaseMeta.singleton == 1).values(revision=DatabaseMeta.revision))
             meta = db.session.execute(select(DatabaseMeta).where(DatabaseMeta.singleton == 1).with_for_update()).scalar_one_or_none()
             if meta is None:
                 meta = DatabaseMeta(singleton=1, revision=0)
@@ -265,7 +266,7 @@ def replace_state(payload: Any, expected_revision: int) -> dict[str, Any]:
             revision = current + 1
             meta.revision = revision
             meta.updated_at = func.current_timestamp()
-            db.session.add(DatabaseAudit(revision=revision, shipment_count=len(shipments), cost_count=len(costs), snapshot_sha256=digest))
+            db.session.add(DatabaseAudit(revision=revision, shipment_count=len(shipments), cost_count=len(costs), snapshot_sha256=digest, actor=actor, action="restore", record_type="state"))
         return get_state()
     except Exception:
         db.session.rollback()
@@ -275,3 +276,109 @@ def replace_state(payload: Any, expected_revision: int) -> dict[str, Any]:
 class RevisionConflict(Exception):
     def __init__(self, current: int):
         self.current = current
+
+
+def save_record(record_type: str, payload: Any, actor: str, expected_version: int | None = None, record_id: int | None = None) -> dict[str, Any]:
+    """Create/update one record atomically; a stale version can never overwrite newer work."""
+    if record_type == "shipment":
+        raw = dict(payload) if isinstance(payload, dict) else payload
+        if not isinstance(raw, dict):
+            raise ValueError("La encomienda debe ser un objeto JSON.")
+        creating = record_id is None
+        if creating:
+            raw["id"] = 1
+            raw["code"] = "PENDIENTE"
+        else:
+            raw["id"] = record_id
+            raw["code"] = text(raw, "code", required=True, max_length=40)
+        normalized, _ = normalize_state({"shipments": [raw], "costs": []})
+        data = normalized[0]
+        with db.session.begin():
+            db.session.execute(update(DatabaseMeta).where(DatabaseMeta.singleton == 1).values(revision=DatabaseMeta.revision))
+            meta = db.session.execute(select(DatabaseMeta).where(DatabaseMeta.singleton == 1).with_for_update()).scalar_one_or_none()
+            if meta is None:
+                meta = DatabaseMeta(singleton=1, revision=0); db.session.add(meta); db.session.flush()
+            if creating:
+                highest = db.session.scalar(select(func.max(Shipment.id))) or 0
+                new_id = highest + 1
+                code_number = (db.session.scalar(select(func.count()).select_from(Shipment)) or 0) + 1
+                data["id"] = new_id
+                data["code"] = f"ENV-{code_number:04d}"
+                while db.session.scalar(select(Shipment.id).where(Shipment.code == data["code"])) is not None:
+                    code_number += 1; data["code"] = f"ENV-{code_number:04d}"
+                row = Shipment(id=new_id)
+                db.session.add(row)
+            else:
+                row = db.session.execute(select(Shipment).where(Shipment.id == record_id, Shipment.version == expected_version).with_for_update()).scalar_one_or_none()
+                if row is None:
+                    latest = db.session.get(Shipment, record_id)
+                    raise RecordConflict(latest.version if latest else None)
+                row.version += 1
+                row.items.clear()
+                row.payments.clear()
+            row.code=data["code"]; row.shipment_date=data["date"]; row.sender=data["sender"]; row.sender_phone=data["senderPhone"]
+            row.receiver=data["receiver"]; row.receiver_phone=data["receiverPhone"]; row.address=data["address"]; row.destination=data["destination"]
+            row.weight_lbs=data["weight"]; row.subtotal_cents=data["subtotal_cents"]; row.postage_cents=data["postage_cents"]
+            row.total_cents=data["total_cents"]; row.status=data["status"]; row.payment_method=data["payment"]
+            row.postage_place=data["postagePlace"]; row.note=data["note"]; row.extra_json=json_object(data["extra"])
+            row.items=[ShipmentItem(position=i, description=x["description"], item_type=x["type"], quantity=x["qty"], weight_lbs=x["lbs"], unit_value_cents=x["value_cents"], amount_cents=x["amount_cents"], extra_json=json_object(x["extra"])) for i,x in enumerate(data["items"])]
+            row.payments=[Payment(paid_on=x["date"], amount_cents=x["amount_cents"], payment_method=x["method"], extra_json=json_object(x["extra"])) for x in data["payments"]]
+            revision=meta.revision+1; meta.revision=revision; meta.updated_at=func.current_timestamp()
+            digest=hashlib.sha256(json_object(raw).encode()).hexdigest()
+            db.session.add(DatabaseAudit(revision=revision, shipment_count=db.session.scalar(select(func.count()).select_from(Shipment)) or 0, cost_count=db.session.scalar(select(func.count()).select_from(TravelCost)) or 0, snapshot_sha256=digest, actor=actor, action="create" if creating else "update", record_type="shipment", record_id=str(row.id)))
+            saved_id=row.id
+        db.session.commit()
+        state=get_state()
+        return next(x for x in state["shipments"] if x["id"] == saved_id)
+
+    if record_type == "cost":
+        raw = dict(payload) if isinstance(payload, dict) else payload
+        if not isinstance(raw, dict): raise ValueError("El costo debe ser un objeto JSON.")
+        creating = record_id is None
+        raw["id"] = 1 if creating else record_id
+        normalized, costs = normalize_state({"shipments": [], "costs": [raw]})
+        data = costs[0]
+        with db.session.begin():
+            db.session.execute(update(DatabaseMeta).where(DatabaseMeta.singleton == 1).values(revision=DatabaseMeta.revision))
+            meta=db.session.execute(select(DatabaseMeta).where(DatabaseMeta.singleton==1).with_for_update()).scalar_one_or_none()
+            if meta is None: meta=DatabaseMeta(singleton=1,revision=0); db.session.add(meta); db.session.flush()
+            if creating:
+                row=TravelCost(); db.session.add(row)
+            else:
+                row=db.session.execute(select(TravelCost).where(TravelCost.id==record_id,TravelCost.version==expected_version).with_for_update()).scalar_one_or_none()
+                if row is None:
+                    latest=db.session.get(TravelCost,record_id); raise RecordConflict(latest.version if latest else None)
+                row.version += 1
+            row.cost_date=data["date"]; row.category=data["category"]; row.amount_cents=data["amount_cents"]
+            row.concept=data["concept"]; row.note=data["note"]; row.extra_json=json_object(data["extra"])
+            revision=meta.revision+1; meta.revision=revision; meta.updated_at=func.current_timestamp()
+            digest=hashlib.sha256(json_object(raw).encode()).hexdigest()
+            db.session.add(DatabaseAudit(revision=revision, shipment_count=db.session.scalar(select(func.count()).select_from(Shipment)) or 0, cost_count=(db.session.scalar(select(func.count()).select_from(TravelCost)) or 0), snapshot_sha256=digest, actor=actor, action="create" if creating else "update", record_type="cost", record_id=str(row.id)))
+            saved_id=row.id
+        db.session.commit()
+        state=get_state()
+        return next(x for x in state["costs"] if x["id"] == saved_id)
+    raise ValueError("Tipo de registro no válido.")
+
+
+def delete_record(record_type: str, record_id: int, expected_version: int, actor: str) -> None:
+    model = Shipment if record_type == "shipment" else TravelCost if record_type == "cost" else None
+    if model is None: raise ValueError("Tipo de registro no válido.")
+    with db.session.begin():
+        db.session.execute(update(DatabaseMeta).where(DatabaseMeta.singleton == 1).values(revision=DatabaseMeta.revision))
+        meta=db.session.execute(select(DatabaseMeta).where(DatabaseMeta.singleton==1).with_for_update()).scalar_one_or_none()
+        row=db.session.execute(select(model).where(model.id==record_id, model.version==expected_version).with_for_update()).scalar_one_or_none()
+        if row is None:
+            latest=db.session.get(model,record_id); raise RecordConflict(latest.version if latest else None)
+        db.session.delete(row)
+        if meta is None: meta=DatabaseMeta(singleton=1,revision=0); db.session.add(meta); db.session.flush()
+        meta.revision += 1; meta.updated_at=func.current_timestamp()
+        db.session.add(DatabaseAudit(revision=meta.revision, shipment_count=db.session.scalar(select(func.count()).select_from(Shipment)) or 0, cost_count=db.session.scalar(select(func.count()).select_from(TravelCost)) or 0, snapshot_sha256=hashlib.sha256(f"delete:{record_type}:{record_id}".encode()).hexdigest(), actor=actor, action="delete", record_type=record_type, record_id=str(record_id)))
+
+
+class RecordConflict(Exception):
+    def __init__(self, current: int | None): self.current = current
+
+
+class RecordNotFound(Exception):
+    pass

@@ -17,6 +17,7 @@ class Shipment(db.Model):
         Index("idx_shipments_sender", "sender"), Index("idx_shipments_receiver", "receiver"),
     )
     id = db.Column(db.Integer, primary_key=True)
+    version = db.Column(db.Integer, nullable=False, server_default="1")
     code = db.Column(db.String(40), nullable=False, unique=True)
     shipment_date = db.Column(db.String(10), nullable=False)
     sender = db.Column(db.Text, nullable=False)
@@ -69,6 +70,7 @@ class TravelCost(db.Model):
     __tablename__ = "travel_costs"
     __table_args__ = (CheckConstraint("amount_cents > 0"), Index("idx_travel_costs_date", "cost_date"))
     id = db.Column(db.Integer, primary_key=True)
+    version = db.Column(db.Integer, nullable=False, server_default="1")
     cost_date = db.Column(db.String(10), nullable=False)
     category = db.Column(db.Text, nullable=False)
     amount_cents = db.Column(db.Integer, nullable=False)
@@ -91,6 +93,21 @@ class DatabaseAudit(db.Model):
     shipment_count = db.Column(db.Integer, nullable=False)
     cost_count = db.Column(db.Integer, nullable=False)
     snapshot_sha256 = db.Column(db.String(64), nullable=False)
+    actor = db.Column(db.String(80), nullable=False, server_default="admin")
+    action = db.Column(db.String(32), nullable=False, server_default="replace")
+    record_type = db.Column(db.String(32), nullable=False, server_default="state")
+    record_id = db.Column(db.String(80), nullable=False, server_default="")
+
+
+class TeamUser(db.Model):
+    __tablename__ = "team_users"
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(40), nullable=False, unique=True, index=True)
+    display_name = db.Column(db.String(100), nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    active = db.Column(db.Boolean, nullable=False, server_default=text("true"))
+    credential_version = db.Column(db.Integer, nullable=False, server_default="1")
+    created_at = db.Column(db.String(32), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
 
 
 class WebActivity(db.Model):
