@@ -46,7 +46,7 @@ La protección cubre la página, los archivos de la app y `/api/*`. Las operacio
 
 ## Monitor de actividad para macOS
 
-El monitor de escritorio consulta `/api/monitor/activity` usando una sesión de administrador. El servidor registra visitas, acciones, inicios de sesión correctos y fallidos, endpoint, código HTTP e IP. No guarda contraseñas, cuerpos de solicitud ni parámetros de consulta. Conserva hasta 5,000 eventos y omite el endpoint de sondeo del monitor.
+El monitor de escritorio consulta `/api/monitor/activity` usando una sesión de administrador. El servidor registra visitas, acciones, inicios de sesión correctos y fallidos, bloqueos por límite de intentos, endpoint, código HTTP e IP. Registra como máximo un aviso de bloqueo por IP cada 15 minutos para evitar escritura repetitiva durante una ráfaga. No guarda contraseñas, cuerpos de solicitud ni parámetros de consulta. Conserva hasta 5,000 eventos y omite el endpoint de sondeo del monitor. La app de macOS resume fallos, bloqueos, errores HTTP e IP sospechosas; permite buscar y filtrar eventos, agrupar visitas repetidas, exportar CSV y habilitar notificaciones locales.
 
 Después de desplegar una versión con el monitor, aplica la migración antes de recargar la app:
 

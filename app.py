@@ -227,10 +227,22 @@ def add_security_headers(response):
 @app.after_request
 def record_web_activity(response):
     """Registra metadatos de uso sin guardar contraseñas ni contenido enviado."""
-    if request.endpoint in {"monitor_activity", "static_files"} or (request.endpoint == "login" and response.status_code == 429):
+    if request.endpoint in {"monitor_activity", "static_files"}:
         return response
     try:
-        if request.endpoint == "login" and request.method == "POST":
+        if request.endpoint == "login" and response.status_code == 429:
+            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat(timespec="seconds")
+            already_reported = db.session.scalar(
+                select(models.WebActivity.id).where(
+                    models.WebActivity.event_type == "login_blocked",
+                    models.WebActivity.remote_addr == (request.remote_addr or "desconocida"),
+                    models.WebActivity.created_at >= cutoff,
+                ).limit(1)
+            )
+            if already_reported:
+                return response
+            event_type = "login_blocked"
+        elif request.endpoint == "login" and request.method == "POST":
             event_type = "login_success" if session.get("jireh_admin") is True else "login_failed"
         elif request.endpoint == "logout":
             event_type = "logout"
