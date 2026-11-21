@@ -180,6 +180,14 @@ def require_admin_session():
 def protect_state_changes_from_csrf():
     if request.method in {"GET", "HEAD", "OPTIONS"} or request.endpoint is None:
         return None
+    # Native clients such as older versions of Monitor Jireh may not send browser origin headers.
+    if (
+        request.endpoint == "login"
+        and not request.headers.get("Origin")
+        and not request.headers.get("Referer")
+        and not request.form.get("csrf_token")
+    ):
+        return None
     expected = session.get("_csrf_token", "")
     supplied = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token", "")
     if not expected or not supplied or not hmac.compare_digest(str(expected), str(supplied)):
