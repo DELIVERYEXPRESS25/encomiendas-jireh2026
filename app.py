@@ -144,12 +144,20 @@ def save_auth_config(config):
 LOGIN_PAGE = """<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Acceso · Encomienda Jireh</title><style>
-*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f1f4f1;color:#26352e;font:16px Arial,sans-serif}
-.card{width:min(92vw,420px);background:white;border-radius:24px;padding:38px;box-shadow:0 18px 55px #16352b20}
-.brand{color:#087f62;font-size:26px;font-weight:700;margin:0 0 8px}.sub{color:#708077;margin:0 0 28px}
-label{display:block;font-weight:700;margin:14px 0 8px}input{width:100%;padding:14px 15px;border:1px solid #cbd7d1;border-radius:12px;font-size:17px}
-button{width:100%;margin-top:20px;padding:14px;border:0;border-radius:14px;background:#087f62;color:white;font-size:17px;font-weight:700;cursor:pointer}
-.error{padding:11px 13px;border-radius:10px;background:#fff0ed;color:#a53727;margin:0 0 16px}.hint{margin:18px 0 0;text-align:center;color:#84918a;font-size:13px}
+:root{color-scheme:dark}*{box-sizing:border-box}
+body{position:relative;isolation:isolate;margin:0;min-height:100vh;min-height:100svh;padding:28px;display:grid;place-items:center;overflow-x:hidden;background:#080808;color:#fff;font:16px/1.5 Arial,sans-serif}
+body:before{position:fixed;inset:0;z-index:-1;content:"";background:radial-gradient(ellipse at 50% 42%,rgba(113,0,9,.34),transparent 46%),linear-gradient(180deg,rgba(0,0,0,.22),#080808 92%),#111}
+body:after{position:fixed;inset:0 0 auto;height:4px;content:"";background:linear-gradient(90deg,#8e0008,#e50914 48%,#8e0008);box-shadow:0 2px 24px #e5091450}
+.card{width:min(92vw,440px);padding:42px 40px 36px;border:1px solid #ffffff16;border-radius:12px;background:rgba(18,18,18,.94);box-shadow:0 24px 80px #000a}
+.brand{margin:0 0 8px;color:#e50914;font-size:30px;line-height:1.15;font-weight:800;letter-spacing:-.7px}.sub{margin:0 0 28px;color:#b3b3b3;font-size:15px}
+label{display:block;margin:14px 0 8px;color:#f2f2f2;font-size:14px;font-weight:700}
+input{width:100%;padding:14px 15px;border:1px solid #555;border-radius:6px;outline:none;background:#2b2b2b;color:#fff;font-size:16px;transition:border-color .18s,box-shadow .18s}
+input:focus{border-color:#e50914;box-shadow:0 0 0 3px #e509142e}
+button{width:100%;margin-top:22px;padding:14px;border:0;border-radius:6px;background:#e50914;color:white;font-size:16px;font-weight:700;cursor:pointer;transition:background .18s,transform .18s}
+button:hover{background:#f6121d}button:active{transform:scale(.99)}button:focus-visible{outline:3px solid #fff;outline-offset:3px}
+.error{margin:0 0 16px;padding:11px 13px;border:1px solid #8e3030;border-radius:6px;background:#391719;color:#ffb8b8}
+.hint{margin:18px 0 0;text-align:center;color:#858585;font-size:13px}
+@media(max-width:520px){body{padding:16px}.card{width:100%;padding:34px 26px 30px}.brand{font-size:27px}}
 </style></head><body><main class="card"><h1 class="brand">Encomienda Jireh</h1><p class="sub">Ingresa la clave de administrador para continuar.</p>
 {% if notice %}<p class="hint" role="status">{{ notice }}</p>{% endif %}
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
