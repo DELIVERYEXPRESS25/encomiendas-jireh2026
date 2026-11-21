@@ -44,6 +44,20 @@ from app import app as application
 
 La protección cubre la página, los archivos de la app y `/api/*`. El usuario y la clave son compartidos; no hay perfiles individuales.
 
+## Monitor de actividad para macOS
+
+El monitor de escritorio consulta `/api/monitor/activity` usando una sesión de administrador. El servidor registra visitas, acciones, inicios de sesión correctos y fallidos, endpoint, código HTTP e IP. No guarda contraseñas, cuerpos de solicitud ni parámetros de consulta. Conserva hasta 5,000 eventos y omite el endpoint de sondeo del monitor.
+
+Después de desplegar una versión con el monitor, aplica la migración antes de recargar la app:
+
+```bash
+cd /home/ZEROBERRY/encomiendas-jireh2026
+# Activa aquí el virtualenv configurado para la app en PythonAnywhere.
+flask --app app db upgrade
+```
+
+En el monitor de macOS usa `https://zeroberry.pythonanywhere.com`. La sesión del monitor se mantiene en memoria y la app no guarda la contraseña.
+
 ## Dependencias de desarrollo
 
 Para instalar las herramientas opcionales de desarrollo:

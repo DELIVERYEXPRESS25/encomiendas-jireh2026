@@ -8,7 +8,7 @@ import tempfile
 
 from flask import Flask, abort, jsonify, redirect, render_template_string, request, send_from_directory, session, url_for
 from flask_migrate import Migrate
-from sqlalchemy import event, text
+from sqlalchemy import delete, event, select, text
 from sqlalchemy.engine import Engine
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -172,6 +172,42 @@ def add_security_headers(response):
     return response
 
 
+@app.after_request
+def record_web_activity(response):
+    """Registra metadatos de uso sin guardar contraseñas ni contenido enviado."""
+    if request.endpoint in {"monitor_activity", "static_files"}:
+        return response
+    try:
+        if request.endpoint == "login" and request.method == "POST":
+            event_type = "login_success" if session.get("jireh_admin") is True else "login_failed"
+        elif request.endpoint == "logout":
+            event_type = "logout"
+        elif request.method == "GET":
+            event_type = "visit"
+        else:
+            event_type = "action"
+
+        activity = models.WebActivity(
+            event_type=event_type,
+            endpoint=request.endpoint or "unknown",
+            method=request.method,
+            status=response.status_code,
+            username="admin" if session.get("jireh_admin") is True else "anonimo",
+            remote_addr=request.remote_addr or "desconocida",
+        )
+        db.session.add(activity)
+        db.session.flush()
+        if activity.id % 100 == 0:
+            db.session.execute(
+                delete(models.WebActivity).where(models.WebActivity.id <= activity.id - 5000)
+            )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        app.logger.exception("No se pudo registrar la actividad web")
+    return response
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if session.get("jireh_admin") is True:
@@ -312,6 +348,30 @@ def write_state():
 def backup():
     state = get_state()
     return jsonify({"app": "encomienda-jireh", "formatVersion": 2, "exportedAt": datetime.now(timezone.utc).isoformat(), **state})
+
+
+@app.get("/api/monitor/activity")
+def monitor_activity():
+    limit = request.args.get("limit", 200, type=int) or 200
+    limit = max(1, min(limit, 500))
+    rows = db.session.scalars(
+        select(models.WebActivity).order_by(models.WebActivity.id.desc()).limit(limit)
+    ).all()
+    return jsonify({
+        "events": [
+            {
+                "id": row.id,
+                "created_at": row.created_at,
+                "event_type": row.event_type,
+                "endpoint": row.endpoint,
+                "method": row.method,
+                "status": row.status,
+                "username": row.username,
+                "remote_addr": row.remote_addr,
+            }
+            for row in rows
+        ]
+    })
 
 
 PUBLIC_FILES = {"logo-jireh.svg", "manifest.webmanifest", "sw.js"}

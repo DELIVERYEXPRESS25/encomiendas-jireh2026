@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from sqlalchemy import CheckConstraint, Index, UniqueConstraint, text
 
 from extensions import db
@@ -89,3 +91,19 @@ class DatabaseAudit(db.Model):
     shipment_count = db.Column(db.Integer, nullable=False)
     cost_count = db.Column(db.Integer, nullable=False)
     snapshot_sha256 = db.Column(db.String(64), nullable=False)
+
+
+class WebActivity(db.Model):
+    __tablename__ = "web_activity"
+    id = db.Column(db.Integer, primary_key=True)
+    created_at = db.Column(
+        db.String(40),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    )
+    event_type = db.Column(db.String(32), nullable=False)
+    endpoint = db.Column(db.String(120), nullable=False)
+    method = db.Column(db.String(12), nullable=False)
+    status = db.Column(db.Integer, nullable=False)
+    username = db.Column(db.String(80), nullable=False)
+    remote_addr = db.Column(db.String(64), nullable=False)
