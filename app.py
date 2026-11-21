@@ -9,7 +9,7 @@ import tempfile
 
 from flask import Flask, abort, jsonify, redirect, render_template, render_template_string, request, send_from_directory, session, url_for
 from flask_migrate import Migrate
-from sqlalchemy import delete, event, func, select, text
+from sqlalchemy import delete, event, select, text
 from sqlalchemy.engine import Engine
 from werkzeug.security import check_password_hash, generate_password_hash
 from flask.sessions import SecureCookieSessionInterface
@@ -162,8 +162,8 @@ button:hover{background:#f6121d}button:active{transform:scale(.99)}button:focus-
 </style></head><body><main class="card"><h1 class="brand">Encomienda Jireh</h1><p class="sub">Ingresa tu usuario y contraseña para continuar.</p>
 {% if notice %}<p class="hint" role="status">{{ notice }}</p>{% endif %}
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
-<form method="post" action="{{ url_for('login') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="next" value="{{ next_url }}">
-<label for="username">Usuario</label><input id="username" name="username" autocomplete="username" value="{{ request.form.get('username', 'admin') }}" required autofocus><label for="password">Contraseña</label><input id="password" name="password" type="password" autocomplete="current-password" required>
+<form method="post" action="{{ url_for('login') }}"><input type="hidden" name="next" value="{{ next_url }}">
+<label for="username">Usuario</label><input id="username" name="username" autocomplete="username" value="{{ request.form.get('username', '') }}" required autofocus><label for="password">Contraseña</label><input id="password" name="password" type="password" autocomplete="current-password" required>
 <button type="submit">Iniciar sesión</button></form><p class="hint">Encomienda Jireh · acceso protegido</p></main></body></html>"""
 
 
@@ -195,13 +195,8 @@ def require_admin_session():
 def protect_state_changes_from_csrf():
     if request.method in {"GET", "HEAD", "OPTIONS"} or request.endpoint is None:
         return None
-    # Native clients such as older versions of Monitor Jireh may not send browser origin headers.
-    if (
-        request.endpoint == "login"
-        and not request.headers.get("Origin")
-        and not request.headers.get("Referer")
-        and not request.form.get("csrf_token")
-    ):
+    # Login credentials are sent without a CSRF token; all state-changing authenticated routes remain protected.
+    if request.endpoint == "login":
         return None
     expected = session.get("_csrf_token", "")
     supplied = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token", "")
@@ -291,36 +286,26 @@ def login():
     status = 200
     if request.method == "POST":
         now = datetime.now(timezone.utc)
-        cutoff = (now - timedelta(minutes=15)).isoformat(timespec="seconds")
-        remote_addr = request.remote_addr or "desconocida"
-        recent_failures = db.session.scalar(
-            select(func.count()).select_from(models.WebActivity).where(
-                models.WebActivity.event_type == "login_failed",
-                models.WebActivity.remote_addr == remote_addr,
-                models.WebActivity.created_at >= cutoff,
-            )
-        ) or 0
-        if recent_failures >= 5:
-            oldest_failure = db.session.scalar(
-                select(func.min(models.WebActivity.created_at)).where(
-                    models.WebActivity.event_type == "login_failed",
-                    models.WebActivity.remote_addr == remote_addr,
-                    models.WebActivity.created_at >= cutoff,
-                )
-            )
-            retry_after = 900
-            if oldest_failure:
-                expires = datetime.fromisoformat(oldest_failure) + timedelta(minutes=15)
+        username = request.form.get("username", "").strip().lower()[:80]
+        lock = db.session.get(models.LoginLock, username) if username else None
+        if lock and lock.locked_until:
+            try:
+                expires = datetime.fromisoformat(lock.locked_until)
+            except ValueError:
+                expires = now
+            if expires > now:
                 retry_after = max(1, int((expires - now).total_seconds()))
-            response = app.make_response(render_template_string(
-                LOGIN_PAGE, error="Demasiados intentos. Espera unos minutos e inténtalo de nuevo.",
-                notice=None, next_url="/", csrf_token=ensure_csrf_token()
-            ))
-            response.status_code = 429
-            response.headers["Retry-After"] = str(retry_after)
-            response.headers["Cache-Control"] = "no-store"
-            return response
-        username = request.form.get("username", "admin").strip().lower()
+                response = app.make_response(render_template_string(
+                    LOGIN_PAGE, error="Usuario bloqueado por demasiados intentos. Intenta de nuevo en unos minutos.",
+                    notice=None, next_url="/"
+                ))
+                response.status_code = 429
+                response.headers["Retry-After"] = str(retry_after)
+                response.headers["Cache-Control"] = "no-store"
+                return response
+            lock.failed_attempts = 0
+            lock.locked_until = ""
+            db.session.commit()
         submitted = request.form.get("password", "")
         auth_config = load_auth_config()
         stored_hash = auth_config.get("admin_password_hash")
@@ -333,6 +318,9 @@ def login():
         team_user = db.session.scalar(select(models.TeamUser).where(models.TeamUser.username == username, models.TeamUser.active.is_(True))) if username != "admin" else None
         staff_matches = bool(team_user) and check_password_hash(team_user.password_hash, submitted)
         if (username == "admin" and (admin_matches or master_matches)) or staff_matches:
+            if lock:
+                db.session.delete(lock)
+                db.session.commit()
             session.clear()
             session["jireh_admin"] = True
             session["jireh_role"] = "admin" if username == "admin" else "staff"
@@ -346,9 +334,24 @@ def login():
             session["auth_version"] = int(auth_config.get("auth_version", 0))
             session.permanent = True
             return redirect(next_url)
-        error = "La clave no es correcta. Intenta de nuevo."
-        status = 401
-    return render_template_string(LOGIN_PAGE, error=error, notice=notice, next_url=next_url, csrf_token=ensure_csrf_token()), status
+        if username:
+            if lock is None:
+                lock = models.LoginLock(username=username, failed_attempts=0, locked_until="")
+                db.session.add(lock)
+            lock.failed_attempts += 1
+            if lock.failed_attempts >= 5:
+                lock.locked_until = (now + timedelta(minutes=15)).isoformat(timespec="seconds")
+                db.session.commit()
+                error = "Usuario bloqueado por demasiados intentos. Intenta de nuevo en unos minutos."
+                status = 429
+            else:
+                db.session.commit()
+                error = "El usuario o la clave no son correctos. Intenta de nuevo."
+                status = 401
+        else:
+            error = "Ingresa tu usuario y contraseña."
+            status = 400
+    return render_template_string(LOGIN_PAGE, error=error, notice=notice, next_url=next_url), status
 
 
 CHANGE_PASSWORD_PAGE = """<!doctype html>

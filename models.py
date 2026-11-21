@@ -110,6 +110,13 @@ class TeamUser(db.Model):
     created_at = db.Column(db.String(32), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
 
 
+class LoginLock(db.Model):
+    __tablename__ = "login_locks"
+    username = db.Column(db.String(80), primary_key=True)
+    failed_attempts = db.Column(db.Integer, nullable=False, server_default="0")
+    locked_until = db.Column(db.String(40), nullable=False, server_default="")
+
+
 class WebActivity(db.Model):
     __tablename__ = "web_activity"
     id = db.Column(db.Integer, primary_key=True)
