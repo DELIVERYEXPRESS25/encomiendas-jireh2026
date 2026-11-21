@@ -42,7 +42,7 @@ os.environ["JIREH_COOKIE_SECURE"] = "1"
 from app import app as application
 ```
 
-La protección cubre la página, los archivos de la app y `/api/*`. El usuario y la clave son compartidos; no hay perfiles individuales.
+La protección cubre la página, los archivos de la app y `/api/*`. Las operaciones que cambian datos requieren un token CSRF de sesión; el inicio de sesión limita los intentos fallidos a cinco por IP en una ventana móvil de 15 minutos y responde `429` al exceder el límite. En HTTPS, las cookies de sesión se marcan como seguras y se envía HSTS. Las respuestas HTML incluyen una política CSP y cabeceras contra MIME sniffing y framing. El usuario y la clave siguen siendo compartidos; no hay perfiles individuales ni segundo factor.
 
 ## Monitor de actividad para macOS
 

@@ -8,9 +8,10 @@ import tempfile
 
 from flask import Flask, abort, jsonify, redirect, render_template_string, request, send_from_directory, session, url_for
 from flask_migrate import Migrate
-from sqlalchemy import delete, event, select, text
+from sqlalchemy import delete, event, func, select, text
 from sqlalchemy.engine import Engine
 from werkzeug.security import check_password_hash, generate_password_hash
+from flask.sessions import SecureCookieSessionInterface
 
 from db import RevisionConflict, get_state, replace_state
 from extensions import db, migrate
@@ -49,7 +50,14 @@ def get_secret_key():
         return generated
 
 
+class RequestAwareSecureCookieSessionInterface(SecureCookieSessionInterface):
+    def get_cookie_secure(self, app):
+        # Use secure cookies automatically for HTTPS requests, including PythonAnywhere.
+        return bool(app.config["SESSION_COOKIE_SECURE"] or request.is_secure)
+
+
 app = Flask(__name__, static_folder=None)
+app.session_interface = RequestAwareSecureCookieSessionInterface()
 app.config.update(
     MAX_CONTENT_LENGTH=25 * 1024 * 1024,
     SECRET_KEY=get_secret_key(),
@@ -109,6 +117,14 @@ def load_auth_config():
         return {}
 
 
+def ensure_csrf_token():
+    token = session.get("_csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+
 def master_auth_tag():
     return hmac.new(app.config["SECRET_KEY"].encode("utf-8"), (MASTER_PASSWORD or "").encode("utf-8"), "sha256").hexdigest()
 
@@ -137,7 +153,7 @@ button{width:100%;margin-top:20px;padding:14px;border:0;border-radius:14px;backg
 </style></head><body><main class="card"><h1 class="brand">Encomienda Jireh</h1><p class="sub">Ingresa la clave de administrador para continuar.</p>
 {% if notice %}<p class="hint" role="status">{{ notice }}</p>{% endif %}
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
-<form method="post" action="{{ url_for('login') }}"><input type="hidden" name="next" value="{{ next_url }}">
+<form method="post" action="{{ url_for('login') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="next" value="{{ next_url }}">
 <label for="password">Clave de administrador</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
 <button type="submit">Iniciar sesión</button></form><p class="hint">Encomienda Jireh · acceso protegido</p></main></body></html>"""
 
@@ -160,13 +176,33 @@ def require_admin_session():
     return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
 
 
+@app.before_request
+def protect_state_changes_from_csrf():
+    if request.method in {"GET", "HEAD", "OPTIONS"} or request.endpoint is None:
+        return None
+    expected = session.get("_csrf_token", "")
+    supplied = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token", "")
+    if not expected or not supplied or not hmac.compare_digest(str(expected), str(supplied)):
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "La solicitud de seguridad expiró. Recarga la página e inténtalo de nuevo."}), 400
+        return "La solicitud de seguridad expiró. Recarga la página e inténtalo de nuevo.", 400
+    return None
+
+
 @app.after_request
 def add_security_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    if app.config["SESSION_COOKIE_SECURE"]:
+    if app.config["SESSION_COOKIE_SECURE"] or request.is_secure:
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    if response.mimetype == "text/html":
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; "
+            "base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+        )
     if request.endpoint in {"index", "login"}:
         response.headers["Cache-Control"] = "no-store"
     return response
@@ -175,7 +211,7 @@ def add_security_headers(response):
 @app.after_request
 def record_web_activity(response):
     """Registra metadatos de uso sin guardar contraseñas ni contenido enviado."""
-    if request.endpoint in {"monitor_activity", "static_files"}:
+    if request.endpoint in {"monitor_activity", "static_files"} or (request.endpoint == "login" and response.status_code == 429):
         return response
     try:
         if request.endpoint == "login" and request.method == "POST":
@@ -219,6 +255,36 @@ def login():
     notice = "La clave se actualizó. Inicia sesión con la nueva clave." if request.args.get("changed") == "1" else None
     status = 200
     if request.method == "POST":
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(minutes=15)).isoformat(timespec="seconds")
+        remote_addr = request.remote_addr or "desconocida"
+        recent_failures = db.session.scalar(
+            select(func.count()).select_from(models.WebActivity).where(
+                models.WebActivity.event_type == "login_failed",
+                models.WebActivity.remote_addr == remote_addr,
+                models.WebActivity.created_at >= cutoff,
+            )
+        ) or 0
+        if recent_failures >= 5:
+            oldest_failure = db.session.scalar(
+                select(func.min(models.WebActivity.created_at)).where(
+                    models.WebActivity.event_type == "login_failed",
+                    models.WebActivity.remote_addr == remote_addr,
+                    models.WebActivity.created_at >= cutoff,
+                )
+            )
+            retry_after = 900
+            if oldest_failure:
+                expires = datetime.fromisoformat(oldest_failure) + timedelta(minutes=15)
+                retry_after = max(1, int((expires - now).total_seconds()))
+            response = app.make_response(render_template_string(
+                LOGIN_PAGE, error="Demasiados intentos. Espera unos minutos e inténtalo de nuevo.",
+                notice=None, next_url="/", csrf_token=ensure_csrf_token()
+            ))
+            response.status_code = 429
+            response.headers["Retry-After"] = str(retry_after)
+            response.headers["Cache-Control"] = "no-store"
+            return response
         submitted = request.form.get("password", "")
         auth_config = load_auth_config()
         stored_hash = auth_config.get("admin_password_hash")
@@ -239,7 +305,7 @@ def login():
             return redirect(next_url)
         error = "La clave no es correcta. Intenta de nuevo."
         status = 401
-    return render_template_string(LOGIN_PAGE, error=error, notice=notice, next_url=next_url), status
+    return render_template_string(LOGIN_PAGE, error=error, notice=notice, next_url=next_url, csrf_token=ensure_csrf_token()), status
 
 
 CHANGE_PASSWORD_PAGE = """<!doctype html>
@@ -251,7 +317,7 @@ p{color:#708077;line-height:1.5}label{display:block;font-weight:700;margin:16px 
 button,.back{display:inline-block;margin-top:20px;padding:13px 18px;border:0;border-radius:12px;background:#087f62;color:white;text-decoration:none;font-size:16px;font-weight:700;cursor:pointer}.error{padding:11px 13px;border-radius:10px;background:#fff0ed;color:#a53727}
 </style></head><body><main class="card"><h1 class="brand">Cambiar clave de acceso</h1><p>Esta clave la usarán quienes entren a la aplicación. La clave maestra permanece privada y no se cambia aquí.</p>
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
-<form method="post"><label for="current_password">Confirma tu clave actual</label><input id="current_password" name="current_password" type="password" autocomplete="current-password" required>
+<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label for="current_password">Confirma tu clave actual</label><input id="current_password" name="current_password" type="password" autocomplete="current-password" required>
 <label for="new_password">Nueva clave de acceso</label><input id="new_password" name="new_password" type="password" minlength="8" autocomplete="new-password" required>
 <label for="confirm_password">Confirma la nueva clave</label><input id="confirm_password" name="confirm_password" type="password" minlength="8" autocomplete="new-password" required>
 <button type="submit">Guardar nueva clave</button></form><a class="back" href="/">Volver a Encomienda Jireh</a></main></body></html>"""
@@ -288,7 +354,7 @@ def change_admin_password():
             save_auth_config(auth_config)
             session.clear()
             return redirect(url_for("login", changed="1"))
-    response = app.make_response(render_template_string(CHANGE_PASSWORD_PAGE, error=error))
+    response = app.make_response(render_template_string(CHANGE_PASSWORD_PAGE, error=error, csrf_token=ensure_csrf_token()))
     response.status_code = status
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -306,6 +372,15 @@ def index():
     marker = '<small class="footer-caption">Encomienda Jireh · versión web</small>'
     link = '<a class="side-action" href="/clave" aria-label="Cambiar clave de acceso">🔐 Cambiar clave de acceso</a>'
     page = page.replace(marker, link + marker, 1)
+    csrf_token = ensure_csrf_token()
+    logout_form = '<form action="/logout" method="post" style="margin:0">'
+    secured_logout_form = logout_form + '<input type="hidden" name="csrf_token" value="' + csrf_token + '">'
+    page = page.replace(logout_form, secured_logout_form, 1)
+    csrf_script = (
+        '<meta name="csrf-token" content="' + csrf_token + '">'
+        '<script>(function(){var f=window.fetch.bind(window);window.fetch=function(input,init){init=init||{};var m=(init.method||(input instanceof Request?input.method:"GET")).toUpperCase();if(!["GET","HEAD","OPTIONS"].includes(m)){var u=new URL(input instanceof Request?input.url:input,location.href);if(u.origin===location.origin){var h=new Headers(init.headers||(input instanceof Request?input.headers:undefined));h.set("X-CSRF-Token",document.querySelector("meta[name=csrf-token]").content);init=Object.assign({},init,{headers:h})}}return f(input,init)}})();</script>'
+    )
+    page = page.replace("<head>", "<head>" + csrf_script, 1)
     response = app.response_class(page, mimetype="text/html")
     response.headers["Cache-Control"] = "no-store"
     return response

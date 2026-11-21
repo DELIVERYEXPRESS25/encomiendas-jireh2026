@@ -1,13 +1,35 @@
+import re
+
 import pytest
 from sqlalchemy import delete, select
 
 import app as app_module
 from app import app
 from extensions import db
-from models import DatabaseAudit, DatabaseMeta, Payment, Shipment, ShipmentItem, TravelCost
+from models import DatabaseAudit, DatabaseMeta, Payment, Shipment, ShipmentItem, TravelCost, WebActivity
 
 TEST_ADMIN_PASSWORD = "test-admin-only"
 MASTER_KEY = "test-master-only"
+
+
+def csrf_token(client, page="/"):
+    response = client.get(page)
+    html = response.get_data(as_text=True)
+    match = re.search(r'name="csrf_token" value="([^"]+)"', html)
+    if not match:
+        match = re.search(r'<meta name="csrf-token" content="([^"]+)"', html)
+    assert match, f"No CSRF token found in {page}"
+    return match.group(1)
+
+
+def post_with_csrf(client, path, data, token_page=None):
+    token = csrf_token(client, token_page or path)
+    return client.post(path, data={**data, "csrf_token": token})
+
+
+def put_state_with_csrf(client, payload):
+    token = csrf_token(client, "/")
+    return client.put("/api/state", json=payload, headers={"X-CSRF-Token": token})
 
 
 @pytest.fixture(autouse=True)
@@ -27,7 +49,7 @@ def apply_migrations():
 @pytest.fixture(autouse=True)
 def clean_database():
     with app.app_context():
-        for model in (ShipmentItem, Payment, DatabaseAudit, Shipment, TravelCost):
+        for model in (ShipmentItem, Payment, DatabaseAudit, Shipment, TravelCost, WebActivity):
             db.session.execute(delete(model))
         meta = db.session.get(DatabaseMeta, 1)
         if meta is None:
@@ -44,7 +66,7 @@ def clean_database():
 def client():
     app.config.update(TESTING=True)
     test_client = app.test_client()
-    response = test_client.post("/login", data={"password": TEST_ADMIN_PASSWORD, "next": "/"})
+    response = post_with_csrf(test_client, "/login", {"password": TEST_ADMIN_PASSWORD, "next": "/"})
     assert response.status_code == 302
     return test_client
 
@@ -78,22 +100,22 @@ def test_login_protects_application_and_data_routes():
     assert page.headers["Location"].startswith("/login")
     assert unauthenticated.get("/api/state").status_code == 401
 
-    rejected = unauthenticated.post("/login", data={"password": "incorrecta"})
+    rejected = post_with_csrf(unauthenticated, "/login", {"password": "incorrecta"})
     assert rejected.status_code == 401
     assert "no es correcta" in rejected.get_data(as_text=True)
 
-    accepted = unauthenticated.post("/login", data={"password": TEST_ADMIN_PASSWORD})
+    accepted = post_with_csrf(unauthenticated, "/login", {"password": TEST_ADMIN_PASSWORD})
     assert accepted.status_code == 302
     assert unauthenticated.get("/api/state").status_code == 200
-    assert unauthenticated.post("/logout").status_code == 302
+    assert post_with_csrf(unauthenticated, "/logout", {}, token_page="/").status_code == 302
     assert unauthenticated.get("/api/state").status_code == 401
 
 
 def test_admin_password_can_be_overridden_with_environment(monkeypatch):
     monkeypatch.setenv("JIREH_ADMIN_PASSWORD", "ClavePersonal-MuySegura")
     configured_client = app.test_client()
-    assert configured_client.post("/login", data={"password": TEST_ADMIN_PASSWORD}).status_code == 401
-    assert configured_client.post("/login", data={"password": "ClavePersonal-MuySegura"}).status_code == 302
+    assert post_with_csrf(configured_client, "/login", {"password": TEST_ADMIN_PASSWORD}).status_code == 401
+    assert post_with_csrf(configured_client, "/login", {"password": "ClavePersonal-MuySegura"}).status_code == 302
 
 
 def test_master_key_can_manage_shared_key_without_exposing_master(monkeypatch, tmp_path):
@@ -102,19 +124,19 @@ def test_master_key_can_manage_shared_key_without_exposing_master(monkeypatch, t
 
     owner = app.test_client()
     other_owner_session = app.test_client()
-    assert owner.post("/login", data={"password": MASTER_KEY}).status_code == 302
-    assert other_owner_session.post("/login", data={"password": MASTER_KEY}).status_code == 302
+    assert post_with_csrf(owner, "/login", {"password": MASTER_KEY}).status_code == 302
+    assert post_with_csrf(other_owner_session, "/login", {"password": MASTER_KEY}).status_code == 302
     page = owner.get("/").get_data(as_text=True)
     assert "/clave" in page
     assert MASTER_KEY not in page
     assert MASTER_KEY.encode() not in owner.get("/clave").data
 
     regular_user = app.test_client()
-    assert regular_user.post("/login", data={"password": TEST_ADMIN_PASSWORD}).status_code == 302
+    assert post_with_csrf(regular_user, "/login", {"password": TEST_ADMIN_PASSWORD}).status_code == 302
     assert regular_user.get("/clave").status_code == 200
     assert "clave actual" in regular_user.get("/clave").get_data(as_text=True).lower()
 
-    changed = owner.post("/clave", data={
+    changed = post_with_csrf(owner, "/clave", {
         "current_password": MASTER_KEY,
         "new_password": "ClaveNuevaSegura2026",
         "confirm_password": "ClaveNuevaSegura2026",
@@ -126,20 +148,20 @@ def test_master_key_can_manage_shared_key_without_exposing_master(monkeypatch, t
     assert other_owner_session.get("/api/state").status_code == 401
 
     old_key = app.test_client()
-    assert old_key.post("/login", data={"password": TEST_ADMIN_PASSWORD}).status_code == 401
+    assert post_with_csrf(old_key, "/login", {"password": TEST_ADMIN_PASSWORD}).status_code == 401
     new_key = app.test_client()
-    assert new_key.post("/login", data={"password": "ClaveNuevaSegura2026"}).status_code == 302
+    assert post_with_csrf(new_key, "/login", {"password": "ClaveNuevaSegura2026"}).status_code == 302
     master_still_works = app.test_client()
-    assert master_still_works.post("/login", data={"password": MASTER_KEY}).status_code == 302
+    assert post_with_csrf(master_still_works, "/login", {"password": MASTER_KEY}).status_code == 302
 
 
 def test_regular_user_can_change_shared_password(monkeypatch, tmp_path):
     monkeypatch.setattr(app_module, "AUTH_CONFIG_PATH", tmp_path / "auth-config.json")
     regular_user = app.test_client()
-    assert regular_user.post("/login", data={"password": TEST_ADMIN_PASSWORD}).status_code == 302
+    assert post_with_csrf(regular_user, "/login", {"password": TEST_ADMIN_PASSWORD}).status_code == 302
     assert regular_user.get("/").status_code == 200
 
-    changed = regular_user.post("/clave", data={
+    changed = post_with_csrf(regular_user, "/clave", {
         "current_password": TEST_ADMIN_PASSWORD,
         "new_password": "ClaveDeUsuarioNueva",
         "confirm_password": "ClaveDeUsuarioNueva",
@@ -147,21 +169,21 @@ def test_regular_user_can_change_shared_password(monkeypatch, tmp_path):
     assert changed.status_code == 302
     assert regular_user.get(changed.headers["Location"]).status_code == 200
     assert "se actualizó" in regular_user.get(changed.headers["Location"]).get_data(as_text=True)
-    assert app.test_client().post("/login", data={"password": TEST_ADMIN_PASSWORD}).status_code == 401
-    assert app.test_client().post("/login", data={"password": "ClaveDeUsuarioNueva"}).status_code == 302
-    assert app.test_client().post("/login", data={"password": MASTER_KEY}).status_code == 302
+    assert post_with_csrf(app.test_client(), "/login", {"password": TEST_ADMIN_PASSWORD}).status_code == 401
+    assert post_with_csrf(app.test_client(), "/login", {"password": "ClaveDeUsuarioNueva"}).status_code == 302
+    assert post_with_csrf(app.test_client(), "/login", {"password": MASTER_KEY}).status_code == 302
 
 
 def test_changing_master_configuration_revokes_old_master_sessions(monkeypatch):
     owner = app.test_client()
-    assert owner.post("/login", data={"password": MASTER_KEY}).status_code == 302
+    assert post_with_csrf(owner, "/login", {"password": MASTER_KEY}).status_code == 302
     assert owner.get("/api/state").status_code == 200
 
     monkeypatch.setattr(app_module, "MASTER_PASSWORD", "master-nueva-test")
     assert owner.get("/api/state").status_code == 401
 
     new_owner = app.test_client()
-    assert new_owner.post("/login", data={"password": "master-nueva-test"}).status_code == 302
+    assert post_with_csrf(new_owner, "/login", {"password": "master-nueva-test"}).status_code == 302
     assert new_owner.get("/clave").status_code == 200
 
 
@@ -181,7 +203,7 @@ def test_health_and_existing_html_are_served(client):
 
 
 def test_state_save_read_and_relational_rows(client):
-    saved = client.put("/api/state", json=valid_payload())
+    saved = put_state_with_csrf(client, valid_payload())
     assert saved.status_code == 200
     assert saved.get_json()["revision"] == 1
 
@@ -199,10 +221,10 @@ def test_state_save_read_and_relational_rows(client):
 def test_validation_and_stale_revision_are_rejected(client):
     invalid = valid_payload()
     invalid["shipments"][0]["subtotal"] = 11
-    rejected = client.put("/api/state", json=invalid)
+    rejected = put_state_with_csrf(client, invalid)
     assert rejected.status_code == 400
 
-    assert client.put("/api/state", json=valid_payload()).status_code == 200
-    stale = client.put("/api/state", json=valid_payload(revision=0))
+    assert put_state_with_csrf(client, valid_payload()).status_code == 200
+    stale = put_state_with_csrf(client, valid_payload(revision=0))
     assert stale.status_code == 409
     assert stale.get_json()["revision"] == 1
